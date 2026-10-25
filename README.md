@@ -19,6 +19,7 @@ The detector is a separate, deterministic rule set. Its default thresholds are d
 - **Overview:** filtered summary metrics, five telemetry timelines, fault-category chart, and synthetic-data disclosure.
 - **Runs:** searchable/sortable telemetry explorer with all 24 source fields, detector output, evidence-based deterministic diagnosis, recommendation, and scenario truth in a detail drawer.
 - **Add run:** enter a synthetic telemetry scenario from the Runs page. New entries are validated and persisted in a separate SQLite table; the supplied CSV remains unchanged. They appear in filters, dashboards, run detail, evaluation, and exports. Their approval state starts false and recovery validation starts unknown; creating a scenario does not approve or execute an action.
+- **Upload CSV:** import another CSV from the Runs page. It must use the exact 24-column telemetry schema and unique run IDs that do not collide with the source CSV or prior local additions. Validated rows are stored in SQLite and tagged `SIMULATED_CSV_UPLOAD`; the uploaded file and configured source CSV are not retained or changed.
 - **Recovery Lab:** adjustable deterministic thresholds, no-fault view, in-memory fault injection, allowlisted actions, explicit approval prompts, and confirmed reset.
 - **Policy and simulation:** recommend-only default; every action requires explicit human approval. Schema-invalid and training-failure cases are high risk. Actions modify only a reversible in-memory overlay, never the CSV or a real model/service. The API checks that the submitted action matches the current recommendation. Post-action rule validation either marks the simulation validated or restores the previous overlay and escalates.
 - **Evaluation:** confusion matrix, precision, recall, F1, false-positive rate, and false-negative rate against the synthetic scenario labels. Reports are named **prototype evaluation against simulated scenario labels**. Detection/recovery time is shown as not derivable because the available records do not contain event-arrival or action-duration timestamps.
@@ -104,7 +105,7 @@ To point at another CSV, edit `.env` (or set a process environment variable befo
 $env:ML_TELEMETRY_CSV = 'D:\data\mlops_crime_telemetry_synthetic.csv'
 ```
 
-The API never writes to the configured CSV. Test and build commands, from the workspace root:
+The API never writes to the configured CSV. CSV upload accepts files up to 10 MB and fails the entire import on invalid schema/data or duplicate IDs. Test and build commands, from the workspace root:
 
 ```powershell
 python -m pytest backend/tests -q
@@ -142,6 +143,14 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/runs -ContentType 
 ```
 
 The created run has `SIMULATED_USER_ADDED` status, `action_approved=false`, and `recovery_validation_passed=null`. Adding telemetry never approves or executes a recovery action.
+
+Upload an additional CSV using the web UI, or submit it to the bulk import endpoint:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/runs/import-csv -F "file=@additional_synthetic_runs.csv"
+```
+
+The uploaded file must match the 24 required columns and validated types. Any run ID already present in the source dataset or local additions rejects the whole import. Imported records receive `SIMULATED_CSV_UPLOAD` status and are included in the app's run views and prototype metrics.
 
 Configure thresholds (values are prototype settings):
 

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Activity, AlertTriangle, ArrowDownToLine, BookOpen, Check, ChevronDown, CircleHelp,
   ClipboardList, Clock3, Database, Gauge, GitBranch, LayoutDashboard, ListFilter,
-  RotateCcw, Search, ShieldAlert, ShieldCheck, SlidersHorizontal, Sparkles, X,
+  RotateCcw, Search, ShieldAlert, ShieldCheck, SlidersHorizontal, Sparkles, Upload, X,
 } from 'lucide-react'
 import {
   Area, Cell, ComposedChart, CartesianGrid, Line, LineChart, Pie, PieChart,
@@ -52,7 +52,8 @@ function App() {
   const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value).map(([key, value]) => [key, value]))
   const queryString = query.toString()
   async function api(path: string, init?: RequestInit) {
-    const response = await fetch(`/api${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } })
+    const isMultipart = init?.body instanceof FormData
+    const response = await fetch(`/api${path}`, { ...init, headers: { ...(isMultipart ? {} : { 'Content-Type': 'application/json' }), ...(init?.headers || {}) } })
     const body = await response.json()
     if (!response.ok) throw new Error(body.detail || 'Request failed. Check that the local API is running.')
     return body
@@ -92,6 +93,19 @@ function App() {
       setNotice(`${created.run_id} saved to local SQLite as SIMULATED_USER_ADDED. The source CSV was not changed.`)
       await openRun(created.run_id)
     } catch (err) { setNotice(err instanceof Error ? err.message : 'Could not add run.') }
+    finally { setBusy(false) }
+  }
+  async function uploadCsv(file: File) {
+    const approved = window.confirm(`Import ${file.name} (${Math.ceil(file.size / 1024)} KB)?\n\nAll uploaded operational values will be treated as simulated demo telemetry. Rows are added to local SQLite; the configured source CSV is not modified.`)
+    if (!approved) return
+    const payload = new FormData()
+    payload.append('file', file)
+    setBusy(true)
+    try {
+      const result = await api('/runs/import-csv', { method: 'POST', body: payload })
+      setNotice(`Imported ${result.imported_count} rows as SIMULATED_CSV_UPLOAD. The source CSV was unchanged.`)
+      setRefreshToken(value => value + 1)
+    } catch (err) { setNotice(err instanceof Error ? err.message : 'CSV import failed.') }
     finally { setBusy(false) }
   }
   async function saveThresholds() {
@@ -163,7 +177,7 @@ function App() {
         {loading && !metadata ? <div className="loading-state"><div className="loader" />Loading local scenario dataset…</div> : <>
           <FilterBar filters={filters} setFilters={setFilters} metadata={metadata} onClear={() => setFilters({ start_date: '', end_date: '', incident_type: '', simulation_status: '', model_version: '', crime_domain_context: '' })} />
           {page === 'Overview' && <Overview dashboard={dashboard} timeline={timeline} onOpen={openRun} />}
-          {page === 'Runs' && <Runs rows={rows} total={runData.total} search={search} setSearch={setSearch} onOpen={openRun} onAdd={() => setShowAddRun(true)} />}
+          {page === 'Runs' && <Runs rows={rows} total={runData.total} search={search} setSearch={setSearch} onOpen={openRun} onAdd={() => setShowAddRun(true)} onUpload={uploadCsv} busy={busy} />}
           {page === 'Recovery Lab' && <Recovery rows={rows} thresholds={thresholds} setThresholds={setThresholds} saveThresholds={saveThresholds} busy={busy} onOpen={openRun} onSimulate={simulate} onInject={injectScenario} onReset={resetSimulation} simulationResult={simulationResult} setSimulationResult={setSimulationResult} />}
           {page === 'Evaluation' && <Evaluation data={evaluation} onExport={() => exportFile('/export/runs.csv')} />}
           {page === 'Audit Log' && <Audit audit={audit} actions={actions} onUndo={undo} onExport={() => exportFile('/export/audit.json')} />}
@@ -217,10 +231,11 @@ function Overview({ dashboard, timeline, onOpen }: { dashboard: AnyRow | null; t
 }
 function MetricTrend({ title, unit, data, field, color, onOpen }: { title: string; unit: string; data: AnyRow[]; field: string; color: string; onOpen: (id: string) => void }) { return <article className="panel chart-panel"><div className="panel-head"><div><h3>{title}</h3><span>SIMULATED measurement</span></div><span className="chart-unit">{unit}</span></div><ResponsiveContainer width="100%" height={180}><LineChart data={data} onClick={(event: any) => event?.activePayload?.[0]?.payload?.run_id && onOpen(event.activePayload[0].payload.run_id)}><CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#e7e9e2" /><XAxis dataKey="shortDate" minTickGap={38} tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} width={44} /><Tooltip formatter={(value: any) => [format(value), `Synthetic ${title.toLowerCase()}`]} /><Line type="monotone" dataKey={field} stroke={color} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} /></LineChart></ResponsiveContainer></article> }
 
-function Runs({ rows, total, search, setSearch, onOpen, onAdd }: { rows: AnyRow[]; total: number; search: string; setSearch: (value: string) => void; onOpen: (id: string) => void; onAdd: () => void }) {
+function Runs({ rows, total, search, setSearch, onOpen, onAdd, onUpload, busy }: { rows: AnyRow[]; total: number; search: string; setSearch: (value: string) => void; onOpen: (id: string) => void; onAdd: () => void; onUpload: (file: File) => void; busy: boolean }) {
   const [sort, setSort] = useState<'timestamp' | 'run_id' | 'validation_f1' | 'pipeline_latency_ms'>('timestamp')
+  const fileInput = useRef<HTMLInputElement>(null)
   const ordered = [...rows].sort((a, b) => String(a[sort]).localeCompare(String(b[sort]), undefined, { numeric: true }) * (sort === 'timestamp' ? -1 : 1))
-  return <><div className="table-toolbar"><div className="search-field"><Search size={16} /><input aria-label="Search telemetry runs" placeholder="Search run, cause, model, domain…" value={search} onChange={event => setSearch(event.target.value)} /></div><div className="runs-toolbar-actions"><span>{format(total, 0)} matching records <Badge>SIMULATED</Badge></span><button className="button primary" onClick={onAdd}><Database size={15} /> Add run</button></div></div><div className="table-wrap"><table><thead><tr><th>RUN</th><th><SortButton title="Timestamp" sort="timestamp" setSort={setSort} /></th><th>SCENARIO</th><th>DETECTOR</th><th>F1 <button className="sort-inline" onClick={() => setSort('validation_f1')}>↕</button></th><th>DRIFT</th><th>LATENCY <button className="sort-inline" onClick={() => setSort('pipeline_latency_ms')}>↕</button></th><th>VERSION</th><th></th></tr></thead><tbody>{ordered.map(row => <tr key={row.run_id} tabIndex={0} onKeyDown={e => e.key === 'Enter' && onOpen(row.run_id)} onClick={() => onOpen(row.run_id)}><td><strong>{row.run_id}</strong><small>{row.run_id.startsWith('local_') ? 'Local addition · simulated' : `${row.crime_domain_context} · derived`}</small></td><td>{row.timestamp.slice(0, 10)}</td><td><Badge tone={row.incident_label ? 'fault' : 'normal'}>{row.incident_type}</Badge></td><td>{row.detected ? <Badge tone="warning">{row.alerts.length} rule(s)</Badge> : <span className="muted">Clear</span>}</td><td>{format(row.validation_f1)}</td><td>{format(row.feature_drift_score)}</td><td>{format(row.pipeline_latency_ms, 0)} ms</td><td>{row.model_version}</td><td><ChevronDown className="row-chevron" size={15} /></td></tr>)}</tbody></table>{!ordered.length && <Empty text="No runs match these filters. Try clearing the search or filters." />}</div><p className="table-foot">CSV scenario labels are synthetic; new entries are labeled SIMULATED_USER_ADDED and stored locally.</p></>
+  return <><div className="table-toolbar"><div className="search-field"><Search size={16} /><input aria-label="Search telemetry runs" placeholder="Search run, cause, model, domain…" value={search} onChange={event => setSearch(event.target.value)} /></div><div className="runs-toolbar-actions"><span>{format(total, 0)} matching records <Badge>SIMULATED</Badge></span><input ref={fileInput} className="visually-hidden" type="file" accept=".csv,text/csv" aria-label="Choose telemetry CSV" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = '' }} /><button className="button secondary" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={15} /> Upload CSV</button><button className="button primary" onClick={onAdd}><Database size={15} /> Add run</button></div></div><div className="table-wrap"><table><thead><tr><th>RUN</th><th><SortButton title="Timestamp" sort="timestamp" setSort={setSort} /></th><th>SCENARIO</th><th>DETECTOR</th><th>F1 <button className="sort-inline" onClick={() => setSort('validation_f1')}>↕</button></th><th>DRIFT</th><th>LATENCY <button className="sort-inline" onClick={() => setSort('pipeline_latency_ms')}>↕</button></th><th>VERSION</th><th></th></tr></thead><tbody>{ordered.map(row => <tr key={row.run_id} tabIndex={0} onKeyDown={e => e.key === 'Enter' && onOpen(row.run_id)} onClick={() => onOpen(row.run_id)}><td><strong>{row.run_id}</strong><small>{row.simulation_status === 'SIMULATED_CSV_UPLOAD' ? 'Uploaded CSV · simulated' : row.run_id.startsWith('local_') ? 'Local addition · simulated' : `${row.crime_domain_context} · derived`}</small></td><td>{row.timestamp.slice(0, 10)}</td><td><Badge tone={row.incident_label ? 'fault' : 'normal'}>{row.incident_type}</Badge></td><td>{row.detected ? <Badge tone="warning">{row.alerts.length} rule(s)</Badge> : <span className="muted">Clear</span>}</td><td>{format(row.validation_f1)}</td><td>{format(row.feature_drift_score)}</td><td>{format(row.pipeline_latency_ms, 0)} ms</td><td>{row.model_version}</td><td><ChevronDown className="row-chevron" size={15} /></td></tr>)}</tbody></table>{!ordered.length && <Empty text="No runs match these filters. Try clearing the search or filters." />}</div><p className="table-foot">Uploaded rows are marked SIMULATED_CSV_UPLOAD. Imported operational values are treated as synthetic; the source CSV remains unchanged.</p></>
 }
 
 function AddRunDialog({ busy, onClose, onSubmit }: { busy: boolean; onClose: () => void; onSubmit: (form: AnyRow) => void }) {

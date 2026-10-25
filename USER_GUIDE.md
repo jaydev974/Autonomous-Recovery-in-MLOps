@@ -51,6 +51,16 @@ Charts show validation F1, feature drift, missing-data rate, latency, and the fa
 
 Adding records never changes `mlops_crime_telemetry_synthetic.csv`. User-entered records persist across API restarts in `backend/mlops_audit.sqlite3`. This is distinct from injected fault/recovery overlays, which exist only in memory and are reset when the API process restarts. The simulation reset button clears action history and overlays, not user-entered telemetry.
 
+### Upload another CSV
+
+1. Open **Runs** and select **Upload CSV**.
+2. Choose a `.csv` file and confirm the import. Treat all uploaded operational values as simulated demo telemetry; do not upload personal or sensitive information.
+3. The file must contain exactly the same 24 columns as the supplied telemetry CSV, valid numeric/boolean/timestamp values, and unique `run_id` values that do not already exist in the source or local SQLite records.
+4. A valid import is added atomically to local SQLite with `SIMULATED_CSV_UPLOAD` status. The source CSV and the uploaded file are not overwritten or retained.
+5. Imported rows appear in filters, dashboards, runs, evaluation, and exports. A validation or duplicate-ID error rejects the whole file without importing partial rows.
+
+The upload limit is 10 MB. For API or PowerShell usage, see the CSV import example in [README.md](README.md).
+
 1. Use the search field to find a run ID, scenario type, root-cause text, model version, or domain context.
 2. Use the table headers to sort supported columns. Each row shows the scenario label separately from whether the configured detector raised an alert.
 3. Select a row to open its detail drawer.

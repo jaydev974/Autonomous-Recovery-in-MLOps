@@ -1,5 +1,6 @@
 import pytest
 import pandas as pd
+from io import StringIO
 from fastapi.testclient import TestClient
 
 from backend.app.detection import Thresholds, detect
@@ -147,3 +148,45 @@ def test_create_run_persists_locally_and_joins_run_list_without_csv_mutation(mon
     assert invalid.status_code == 422
     blank_name = client.post("/api/runs", json={"model_name": "   "})
     assert blank_name.status_code == 422
+
+
+def test_csv_upload_imports_valid_rows_and_rejects_duplicate_batch_atomically(monkeypatch, tmp_path):
+    from backend.app import api, database
+    from backend.app.data import REQUIRED_COLUMNS
+    monkeypatch.setattr(database.settings, "audit_db", tmp_path / "csv-import.sqlite3")
+    database.init_db()
+    source_row = {column: "" for column in REQUIRED_COLUMNS}
+    source_row.update({"run_id": "source_run", "timestamp": "2024-01-01T00:00:00Z", "source_dataset": "source.csv",
+                       "source_period": 2024, "crime_domain_context": "Context", "crime_records_in_daily_domain_batch": 3,
+                       "model_name": "Demo", "model_version": "v1", "data_quality_missing_rate": 0.01,
+                       "schema_valid": True, "feature_drift_score": 0.1, "validation_f1": 0.7,
+                       "pipeline_latency_ms": 450, "training_success": True, "incident_type": "normal",
+                       "incident_label": 0, "incident_id": None, "root_cause": "none_detected",
+                       "recommended_action": "continue_monitoring", "action_risk": "low", "action_approved": False,
+                       "recovery_validation_passed": True, "simulation_status": "SIMULATED_NORMAL_RUN",
+                       "data_provenance": "synthetic test scenario"})
+    monkeypatch.setattr(api, "get_frame", lambda: pd.DataFrame([source_row]))
+    monkeypatch.setattr(api, "thresholds", Thresholds())
+    OVERLAYS.clear()
+    INJECTIONS.clear()
+    upload_row = {**source_row, "run_id": "uploaded_run"}
+    csv_text = pd.DataFrame([upload_row]).to_csv(index=False)
+    client = TestClient(api.app)
+
+    imported = client.post("/api/runs/import-csv", files={"file": ("additional.csv", csv_text, "text/csv")})
+    assert imported.status_code == 201
+    assert imported.json()["imported_count"] == 1
+    assert imported.json()["simulation_status"] == "SIMULATED_CSV_UPLOAD"
+    stored = database.get_telemetry_runs()[0]
+    assert stored["run_id"] == "uploaded_run"
+    assert "uploaded CSV" in stored["data_provenance"]
+    assert source_row["simulation_status"] == "SIMULATED_NORMAL_RUN"
+
+    duplicate = client.post("/api/runs/import-csv", files={"file": ("duplicate.csv", csv_text, "text/csv")})
+    assert duplicate.status_code == 409
+    assert len(database.get_telemetry_runs()) == 1
+
+    invalid_csv = "run_id,timestamp\nonly,two-columns\n"
+    invalid = client.post("/api/runs/import-csv", files={"file": ("invalid.csv", invalid_csv, "text/csv")})
+    assert invalid.status_code == 422
+    assert len(database.get_telemetry_runs()) == 1

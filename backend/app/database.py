@@ -27,6 +27,21 @@ def add_telemetry_run(record: dict[str, Any]) -> None:
                    (record["run_id"], json.dumps(record)))
 
 
+def add_telemetry_runs(records: list[dict[str, Any]]) -> None:
+    with connect() as db:
+        db.executemany("INSERT INTO telemetry_runs(run_id,record_json) VALUES(?,?)",
+                       [(record["run_id"], json.dumps(record)) for record in records])
+
+
+def existing_telemetry_run_ids(run_ids: list[str]) -> set[str]:
+    if not run_ids:
+        return set()
+    placeholders = ",".join("?" for _ in run_ids)
+    with connect() as db:
+        rows = db.execute(f"SELECT run_id FROM telemetry_runs WHERE run_id IN ({placeholders})", run_ids).fetchall()
+    return {row["run_id"] for row in rows}
+
+
 def get_telemetry_runs() -> list[dict[str, Any]]:
     with connect() as db:
         rows = db.execute("SELECT record_json FROM telemetry_runs ORDER BY created_at DESC, run_id").fetchall()

@@ -5,14 +5,14 @@ from typing import Literal
 from uuid import uuid4
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from . import database
 from .config import settings
-from .data import DatasetError, get_frame, record_dict
+from .data import DatasetError, get_frame, parse_csv_bytes, record_dict
 from .detection import Thresholds, detect, thresholds_from_dict
 from .evaluation import evaluate
 from .policy import recommendation
@@ -24,6 +24,7 @@ app = FastAPI(title="Autonomous Recovery in MLOps", version="1.0.0", description
 app.add_middleware(CORSMiddleware, allow_origins=settings.allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 database.init_db()
 thresholds = Thresholds()
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 class ThresholdBody(BaseModel):
@@ -225,6 +226,46 @@ def create_run(body: CreateRunBody):
         raise HTTPException(status_code=409, detail=f"Could not save run: {exc}") from exc
     database.log_event("telemetry_run_added", {"simulation_status": "SIMULATED_USER_ADDED", "source_csv_modified": False}, record["run_id"])
     return enrich(record)
+
+
+@app.post("/api/runs/import-csv", status_code=201)
+async def import_runs_csv(file: UploadFile = File(...)):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Upload a .csv file.")
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="CSV upload exceeds the 10 MB limit.")
+    try:
+        frame = parse_csv_bytes(content)
+    except DatasetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    records = [record_dict(row) for _, row in frame.iterrows()]
+    run_ids = [record["run_id"] for record in records]
+    existing_source_ids = set(get_frame()["run_id"].astype(str))
+    local_duplicates = database.existing_telemetry_run_ids(run_ids)
+    duplicate_ids = sorted((set(run_ids) & existing_source_ids) | local_duplicates)
+    if duplicate_ids:
+        preview = ", ".join(duplicate_ids[:5])
+        suffix = "..." if len(duplicate_ids) > 5 else ""
+        raise HTTPException(status_code=409, detail=f"CSV contains run IDs already in the system: {preview}{suffix}. No rows were imported.")
+
+    for record in records:
+        record["simulation_status"] = "SIMULATED_CSV_UPLOAD"
+        record["data_provenance"] = f"{record['data_provenance']}; uploaded CSV; treated as simulated demo telemetry; source CSV unchanged"
+    try:
+        database.add_telemetry_runs(records)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Could not import CSV transaction: {exc}") from exc
+    database.log_event("telemetry_csv_imported", {
+        "filename": file.filename,
+        "imported_count": len(records),
+        "simulation_status": "SIMULATED_CSV_UPLOAD",
+        "source_csv_modified": False,
+    })
+    return {"imported_count": len(records), "run_ids": run_ids, "simulation_status": "SIMULATED_CSV_UPLOAD",
+            "source_csv_modified": False, "message": f"Imported {len(records)} synthetic scenario records into local SQLite."}
 
 
 @app.get("/api/runs/{run_id}")

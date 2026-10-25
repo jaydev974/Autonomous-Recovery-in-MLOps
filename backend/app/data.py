@@ -1,4 +1,5 @@
 from functools import lru_cache
+from io import BytesIO
 from typing import Any
 
 import pandas as pd
@@ -33,6 +34,18 @@ def load_frame(path=None) -> pd.DataFrame:
         frame = pd.read_csv(source)
     except Exception as exc:
         raise DatasetError(f"Could not read telemetry CSV: {exc}") from exc
+    return validate_frame(frame)
+
+
+def parse_csv_bytes(content: bytes) -> pd.DataFrame:
+    try:
+        frame = pd.read_csv(BytesIO(content))
+    except Exception as exc:
+        raise DatasetError(f"Could not read uploaded CSV: {exc}") from exc
+    return validate_frame(frame)
+
+
+def validate_frame(frame: pd.DataFrame) -> pd.DataFrame:
     missing = sorted(set(REQUIRED_COLUMNS) - set(frame.columns))
     unexpected = sorted(set(frame.columns) - set(REQUIRED_COLUMNS))
     if missing:
