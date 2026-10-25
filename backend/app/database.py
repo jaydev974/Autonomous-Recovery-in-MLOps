@@ -18,6 +18,19 @@ def init_db(path: Path | None = None) -> None:
     with connect(path) as db:
         db.execute("CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, run_id TEXT, event_type TEXT NOT NULL, simulated INTEGER NOT NULL DEFAULT 1, details TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, run_id TEXT NOT NULL, action_id TEXT NOT NULL, status TEXT NOT NULL, prior_state TEXT NOT NULL, current_state TEXT NOT NULL, details TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS telemetry_runs (run_id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, record_json TEXT NOT NULL)")
+
+
+def add_telemetry_run(record: dict[str, Any]) -> None:
+    with connect() as db:
+        db.execute("INSERT INTO telemetry_runs(run_id,record_json) VALUES(?,?)",
+                   (record["run_id"], json.dumps(record)))
+
+
+def get_telemetry_runs() -> list[dict[str, Any]]:
+    with connect() as db:
+        rows = db.execute("SELECT record_json FROM telemetry_runs ORDER BY created_at DESC, run_id").fetchall()
+    return [json.loads(row["record_json"]) for row in rows]
 
 
 def log_event(event_type: str, details: dict[str, Any], run_id: str | None = None) -> None:

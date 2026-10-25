@@ -1,4 +1,5 @@
 import pytest
+import pandas as pd
 from fastapi.testclient import TestClient
 
 from backend.app.detection import Thresholds, detect
@@ -105,3 +106,44 @@ def test_api_injection_is_overlay_only_and_action_must_match_policy(monkeypatch,
     blocked = client.post("/api/runs/run_test/simulate", json={"action_id": "quarantine_batch", "human_approved": True})
     assert blocked.status_code == 409
     assert record["model_version"] == "v1"
+
+
+def test_create_run_persists_locally_and_joins_run_list_without_csv_mutation(monkeypatch, tmp_path):
+    from backend.app import api, database
+    from backend.app.data import REQUIRED_COLUMNS
+    monkeypatch.setattr(database.settings, "audit_db", tmp_path / "user-runs.sqlite3")
+    database.init_db()
+    source_record = sample(feature_drift_score=0.1, data_quality_missing_rate=0.01)
+    source_record.update({"incident_label": 0, "incident_type": "normal", "simulation_status": "SIMULATED_NORMAL_RUN"})
+    monkeypatch.setattr(api, "get_frame", lambda: pd.DataFrame(columns=REQUIRED_COLUMNS))
+    monkeypatch.setattr(api, "thresholds", Thresholds())
+    OVERLAYS.clear()
+    INJECTIONS.clear()
+    client = TestClient(api.app)
+
+    response = client.post("/api/runs", json={"incident_type": "missing_data", "data_quality_missing_rate": 0.4,
+                                             "crime_domain_context": "Aggregate Demo Context", "crime_records_in_daily_domain_batch": 12})
+    assert response.status_code == 201
+    created = response.json()
+    assert created["run_id"].startswith("local_")
+    assert created["simulation_status"] == "SIMULATED_USER_ADDED"
+    assert created["incident_label"] == 1
+    assert created["data_provenance"].startswith("user-entered synthetic")
+    assert created["action_approved"] is False
+    assert created["recovery_validation_passed"] is None
+
+    listed = client.get("/api/runs").json()
+    assert listed["total"] == 1
+    assert listed["items"][0]["run_id"] == created["run_id"]
+    assert database.get_telemetry_runs()[0]["run_id"] == created["run_id"]
+    assert source_record["feature_drift_score"] == 0.1
+    dashboard = client.get("/api/dashboard").json()
+    assert dashboard["summary"]["total_runs"] == 1
+    assert dashboard["summary"]["simulated_fault_runs"] == 1
+    assert dashboard["fault_breakdown"] == [{"incident_type": "missing_data", "count": 1}]
+    assert client.get("/api/evaluation").json()["sample_count"] == 1
+
+    invalid = client.post("/api/runs", json={"feature_drift_score": 1.5})
+    assert invalid.status_code == 422
+    blank_name = client.post("/api/runs", json={"model_name": "   "})
+    assert blank_name.status_code == 422

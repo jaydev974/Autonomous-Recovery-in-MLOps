@@ -41,6 +41,16 @@ Charts show validation F1, feature drift, missing-data rate, latency, and the fa
 
 ## Runs
 
+### Add a telemetry run
+
+1. Open **Runs** and select **Add run**.
+2. Enter a timestamp, scenario type, descriptive domain context, aggregate batch count, model name/version, and operational measurements. Choose the schema and training booleans.
+3. Keep measurements synthetic and use aggregate context only. The form labels this restriction and validates numeric ranges before saving.
+4. Select **Save simulated run**. The app assigns a `local_...` run ID, derives a synthetic binary scenario label from the selected scenario type, and writes the new record to a separate SQLite table.
+5. The new run appears in the run list, charts/summary, filters, evaluation, and filtered CSV export. Its `SIMULATED_USER_ADDED` status and provenance distinguish it from the supplied CSV rows. Approval starts false and recovery validation is unknown; adding a scenario does not approve or execute a recovery action.
+
+Adding records never changes `mlops_crime_telemetry_synthetic.csv`. User-entered records persist across API restarts in `backend/mlops_audit.sqlite3`. This is distinct from injected fault/recovery overlays, which exist only in memory and are reset when the API process restarts. The simulation reset button clears action history and overlays, not user-entered telemetry.
+
 1. Use the search field to find a run ID, scenario type, root-cause text, model version, or domain context.
 2. Use the table headers to sort supported columns. Each row shows the scenario label separately from whether the configured detector raised an alert.
 3. Select a row to open its detail drawer.

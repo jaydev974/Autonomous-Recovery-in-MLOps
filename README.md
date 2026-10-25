@@ -18,10 +18,11 @@ The detector is a separate, deterministic rule set. Its default thresholds are d
 
 - **Overview:** filtered summary metrics, five telemetry timelines, fault-category chart, and synthetic-data disclosure.
 - **Runs:** searchable/sortable telemetry explorer with all 24 source fields, detector output, evidence-based deterministic diagnosis, recommendation, and scenario truth in a detail drawer.
+- **Add run:** enter a synthetic telemetry scenario from the Runs page. New entries are validated and persisted in a separate SQLite table; the supplied CSV remains unchanged. They appear in filters, dashboards, run detail, evaluation, and exports. Their approval state starts false and recovery validation starts unknown; creating a scenario does not approve or execute an action.
 - **Recovery Lab:** adjustable deterministic thresholds, no-fault view, in-memory fault injection, allowlisted actions, explicit approval prompts, and confirmed reset.
 - **Policy and simulation:** recommend-only default; every action requires explicit human approval. Schema-invalid and training-failure cases are high risk. Actions modify only a reversible in-memory overlay, never the CSV or a real model/service. The API checks that the submitted action matches the current recommendation. Post-action rule validation either marks the simulation validated or restores the previous overlay and escalates.
 - **Evaluation:** confusion matrix, precision, recall, F1, false-positive rate, and false-negative rate against the synthetic scenario labels. Reports are named **prototype evaluation against simulated scenario labels**. Detection/recovery time is shown as not derivable because the available records do not contain event-arrival or action-duration timestamps.
-- **Audit Log:** local SQLite records for run inspection/detection, diagnosis, recommendation, rule changes, fault injection, approval, execution, validation, rollback, reset, and action history. Audit and filtered run exports are available as JSON and CSV.
+- **Audit Log:** local SQLite records for user-entered runs and for run inspection/detection, diagnosis, recommendation, rule changes, fault injection, approval, execution, validation, rollback, reset, and action history. Audit and filtered run exports are available as JSON and CSV.
 - **Architecture & Limitations:** the seven paper layers, app mapping, demo walkthrough, and research limitations.
 
 Root-cause analysis maps detector rules to causes and cites the supporting telemetry field/value. Its confidence is a rule-based category, not a calibrated probability; it does not claim causal ground truth. There is no LLM.
@@ -65,7 +66,7 @@ frontend/src/
 
 - Windows 10/11, PowerShell, Python 3.11 or later, Node.js 20 or later, and npm.
 - The input CSV stays in the workspace root by default. Configure another location with `ML_TELEMETRY_CSV`.
-- All services bind to loopback by default. SQLite is created locally at `backend/mlops_audit.sqlite3` and is ignored by Git.
+- All services bind to loopback by default. SQLite is created locally at `backend/mlops_audit.sqlite3` and is ignored by Git. User-entered demo runs persist across API restarts; temporary fault/recovery overlays do not.
 
 ## Run locally (PowerShell)
 
@@ -122,6 +123,25 @@ Invoke-RestMethod 'http://127.0.0.1:8000/api/dashboard?incident_type=data_drift'
 Invoke-RestMethod 'http://127.0.0.1:8000/api/runs/run_00003'
 Invoke-RestMethod http://127.0.0.1:8000/api/evaluation
 ```
+
+Add a user-entered synthetic run. The API validates values, generates a local ID/label, and persists it in SQLite without writing to the CSV:
+
+```powershell
+$newRun = @{
+  incident_type = 'missing_data'
+  crime_domain_context = 'Demo aggregate context'
+  crime_records_in_daily_domain_batch = 12
+  data_quality_missing_rate = 0.42
+  feature_drift_score = 0.15
+  validation_f1 = 0.61
+  pipeline_latency_ms = 450
+  schema_valid = $true
+  training_success = $true
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/runs -ContentType 'application/json' -Body $newRun
+```
+
+The created run has `SIMULATED_USER_ADDED` status, `action_approved=false`, and `recovery_validation_passed=null`. Adding telemetry never approves or executes a recovery action.
 
 Configure thresholds (values are prototype settings):
 

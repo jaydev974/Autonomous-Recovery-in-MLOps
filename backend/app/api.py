@@ -1,12 +1,14 @@
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Literal
+from uuid import uuid4
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import database
 from .config import settings
@@ -43,9 +45,33 @@ class InjectBody(BaseModel):
     scenario: str
 
 
+class CreateRunBody(BaseModel):
+    timestamp: datetime | None = None
+    crime_domain_context: str = Field(default="Other Crime", min_length=1, max_length=120)
+    crime_records_in_daily_domain_batch: int = Field(default=0, ge=0, le=100000000)
+    model_name: str = Field(default="ManualDemoModel", min_length=1, max_length=120)
+    model_version: str = Field(default="v1", min_length=1, max_length=40)
+    data_quality_missing_rate: float = Field(default=0, ge=0, le=1)
+    schema_valid: bool = True
+    feature_drift_score: float = Field(default=0, ge=0, le=1)
+    validation_f1: float = Field(default=0.5, ge=0, le=1)
+    pipeline_latency_ms: float = Field(default=500, ge=0, le=3600000)
+    training_success: bool = True
+    incident_type: Literal["normal", "data_drift", "missing_data", "schema_error", "high_latency", "training_failure"] = "normal"
+
+    @field_validator("crime_domain_context", "model_name", "model_version")
+    @classmethod
+    def require_nonblank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must contain at least one non-whitespace character.")
+        return value
+
+
 def base_records() -> list[dict[str, Any]]:
     try:
-        return [record_dict(row) for _, row in get_frame().iterrows()]
+        source_records = [record_dict(row) for _, row in get_frame().iterrows()]
+        return source_records + database.get_telemetry_runs()
     except DatasetError:
         raise
 
@@ -101,7 +127,8 @@ def health():
 @app.get("/api/metadata")
 def metadata():
     records = dataset_or_503()
-    return {"title": "Autonomous Recovery in MLOps", "rows": len(records), "columns": list(records[0]),
+    return {"title": "Autonomous Recovery in MLOps", "rows": len(records), "source_rows": len(get_frame()),
+            "user_added_rows": len(records) - len(get_frame()), "columns": list(records[0]),
             "incident_types": sorted({row["incident_type"] for row in records}),
             "simulation_statuses": sorted({row["simulation_status"] for row in records}),
             "model_versions": sorted({row["model_version"] for row in records}),
@@ -133,7 +160,7 @@ def dashboard(start_date: str | None = None, end_date: str | None = None, incide
                           "pipeline_latency_ms": row["pipeline_latency_ms"], "incident_type": row["incident_type"],
                           "detected": row["detected"], "incident_label": row["incident_label"]} for row in enriched],
             "fault_breakdown": [{"incident_type": label, "count": count} for label, count in
-                                sorted(__import__("collections").Counter(row["incident_type"] for row in records if row["incident_type"] != "normal").items())],
+                                sorted(__import__("collections").Counter(row["incident_type"] for row in records if row["incident_label"] == 1).items())],
             "thresholds": thresholds.to_dict(), "simulated": True}
 
 
@@ -149,6 +176,55 @@ def runs(search: str | None = None, sort_by: str = "timestamp", order: str = "de
         raise HTTPException(status_code=400, detail="Unsupported sort field.")
     records.sort(key=lambda row: (row[sort_by] is None, row[sort_by]), reverse=order.lower() != "asc")
     return {"total": len(records), "items": [enrich(row) for row in records[offset:offset + limit]], "offset": offset, "limit": limit, "simulated": True}
+
+
+@app.post("/api/runs", status_code=201)
+def create_run(body: CreateRunBody):
+    timestamp = body.timestamp or datetime.now(timezone.utc)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    timestamp_text = timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    fault_metadata = {
+        "normal": ("none_detected", "continue_monitoring", "low"),
+        "data_drift": ("feature_distribution_shift", "compare_with_baseline_and_request_retraining_review", "medium"),
+        "missing_data": ("upstream_data_completeness_issue", "quarantine_bad_batch_for_review", "medium"),
+        "schema_error": ("required_schema_validation_failed", "stop_run_and_validate_input_schema", "high"),
+        "high_latency": ("pipeline_processing_delay", "compare_pipeline_latency_with_baseline", "low"),
+        "training_failure": ("training_job_failed", "retain_previous_model_and_review_job_logs", "high"),
+    }
+    root_cause, action, risk = fault_metadata[body.incident_type]
+    record = {
+        "run_id": f"local_{uuid4().hex[:12]}",
+        "timestamp": timestamp_text,
+        "source_dataset": "user_entered_demo",
+        "source_period": timestamp.year,
+        "crime_domain_context": body.crime_domain_context.strip(),
+        "crime_records_in_daily_domain_batch": body.crime_records_in_daily_domain_batch,
+        "model_name": body.model_name.strip(),
+        "model_version": body.model_version.strip(),
+        "data_quality_missing_rate": body.data_quality_missing_rate,
+        "schema_valid": body.schema_valid,
+        "feature_drift_score": body.feature_drift_score,
+        "validation_f1": body.validation_f1,
+        "pipeline_latency_ms": body.pipeline_latency_ms,
+        "training_success": body.training_success,
+        "incident_type": body.incident_type,
+        "incident_label": int(body.incident_type != "normal"),
+        "incident_id": None,
+        "root_cause": root_cause,
+        "recommended_action": action,
+        "action_risk": risk,
+        "action_approved": False,
+        "recovery_validation_passed": None,
+        "simulation_status": "SIMULATED_USER_ADDED",
+        "data_provenance": "user-entered synthetic demo telemetry; persisted locally; not production data",
+    }
+    try:
+        database.add_telemetry_run(record)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Could not save run: {exc}") from exc
+    database.log_event("telemetry_run_added", {"simulation_status": "SIMULATED_USER_ADDED", "source_csv_modified": False}, record["run_id"])
+    return enrich(record)
 
 
 @app.get("/api/runs/{run_id}")

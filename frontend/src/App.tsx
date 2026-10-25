@@ -46,6 +46,8 @@ function App() {
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [simulationResult, setSimulationResult] = useState<AnyRow | null>(null)
+  const [showAddRun, setShowAddRun] = useState(false)
+  const [refreshToken, setRefreshToken] = useState(0)
 
   const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value).map(([key, value]) => [key, value]))
   const queryString = query.toString()
@@ -68,7 +70,7 @@ function App() {
     } catch (err) { setError(err instanceof Error ? err.message : 'Unable to load local data.') }
     finally { setLoading(false) }
   }
-  useEffect(() => { void refresh(true) }, [queryString])
+  useEffect(() => { void refresh(true) }, [queryString, refreshToken])
   useEffect(() => {
     const timer = window.setTimeout(() => { void refresh() }, 250)
     return () => window.clearTimeout(timer)
@@ -77,6 +79,20 @@ function App() {
   async function openRun(runId: string) {
     try { setSelected(await api(`/runs/${runId}`)) }
     catch (err) { setNotice(err instanceof Error ? err.message : 'Unable to open run.') }
+  }
+  async function addRun(form: AnyRow) {
+    setBusy(true)
+    try {
+      const created = await api('/runs', { method: 'POST', body: JSON.stringify(form) })
+      setShowAddRun(false)
+      setPage('Runs')
+      setSearch('')
+      setFilters({ start_date: '', end_date: '', incident_type: '', simulation_status: '', model_version: '', crime_domain_context: '' })
+      setRefreshToken(value => value + 1)
+      setNotice(`${created.run_id} saved to local SQLite as SIMULATED_USER_ADDED. The source CSV was not changed.`)
+      await openRun(created.run_id)
+    } catch (err) { setNotice(err instanceof Error ? err.message : 'Could not add run.') }
+    finally { setBusy(false) }
   }
   async function saveThresholds() {
     setBusy(true)
@@ -147,7 +163,7 @@ function App() {
         {loading && !metadata ? <div className="loading-state"><div className="loader" />Loading local scenario dataset…</div> : <>
           <FilterBar filters={filters} setFilters={setFilters} metadata={metadata} onClear={() => setFilters({ start_date: '', end_date: '', incident_type: '', simulation_status: '', model_version: '', crime_domain_context: '' })} />
           {page === 'Overview' && <Overview dashboard={dashboard} timeline={timeline} onOpen={openRun} />}
-          {page === 'Runs' && <Runs rows={rows} total={runData.total} search={search} setSearch={setSearch} onOpen={openRun} />}
+          {page === 'Runs' && <Runs rows={rows} total={runData.total} search={search} setSearch={setSearch} onOpen={openRun} onAdd={() => setShowAddRun(true)} />}
           {page === 'Recovery Lab' && <Recovery rows={rows} thresholds={thresholds} setThresholds={setThresholds} saveThresholds={saveThresholds} busy={busy} onOpen={openRun} onSimulate={simulate} onInject={injectScenario} onReset={resetSimulation} simulationResult={simulationResult} setSimulationResult={setSimulationResult} />}
           {page === 'Evaluation' && <Evaluation data={evaluation} onExport={() => exportFile('/export/runs.csv')} />}
           {page === 'Audit Log' && <Audit audit={audit} actions={actions} onUndo={undo} onExport={() => exportFile('/export/audit.json')} />}
@@ -155,11 +171,12 @@ function App() {
         </>}
       </section>
     </main>
+    {showAddRun && <AddRunDialog busy={busy} onClose={() => setShowAddRun(false)} onSubmit={addRun} />}
     {current && <div className="drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null) }}><aside className="detail-drawer" aria-label={`Run details ${current.run_id}`}><div className="drawer-head"><div><Badge>SIMULATED</Badge><h2>{current.run_id}</h2><span>{current.timestamp}</span></div><button className="icon-button" onClick={() => setSelected(null)} aria-label="Close run details"><X /></button></div><div className="drawer-scroll"><div className="detail-status"><Badge tone={current.detected ? 'fault' : 'normal'}>{current.detected ? `${current.alerts?.length} detector alert${current.alerts?.length === 1 ? '' : 's'}` : 'No detector alert'}</Badge><Badge tone="warning">{current.incident_type} scenario</Badge></div>
       <section className="detail-section"><h3>Detector output <span className="simulated-label">SIMULATED</span></h3>{current.alerts?.length ? current.alerts.map((alert: AnyRow) => <div className="evidence-row" key={alert.rule_id}><div><b>{alert.rule_name}</b><small>{alert.timestamp} · {alert.run_id}</small></div><Badge tone={alert.severity === 'critical' ? 'fault' : 'warning'}>{alert.severity}</Badge><p>Observed {format(alert.observed_value)} · threshold {format(alert.threshold)}</p></div>) : <p className="muted">No configured rule triggered for this run.</p>}</section>
       <section className="detail-section"><h3>Evidence-based diagnosis</h3>{current.diagnoses?.length ? current.diagnoses.map((item: AnyRow, index: number) => <div className="diagnosis" key={`${item.rule_id}-${index}`}><strong>{item.cause}</strong><p>{item.rationale}</p><small>Rule confidence: {item.confidence}. Not a calibrated probability.</small><div>{item.evidence.map((e: AnyRow) => <span className="evidence-chip" key={e.field}>{e.field}: {format(e.value)}</span>)}</div></div>) : <p className="muted">No rule-based cause assigned.</p>}</section>
       <section className="detail-section"><h3>Recovery policy</h3>{current.recommendation ? <div className="policy-panel"><div className="policy-title"><strong>{current.recommendation.label}</strong><Badge tone={current.recommendation.risk === 'high' ? 'fault' : 'warning'}>{current.recommendation.risk} risk</Badge></div><p>{current.recommendation.rationale}</p><div className="policy-meta"><span>Reversible: yes</span><span>Human approval: required</span><span>Mode: recommend-only</span></div><button className="button primary full" disabled={busy} onClick={() => void simulate(current)}><ShieldCheck size={16} /> Approve simulated action</button></div> : <p className="muted">No recovery action recommended.</p>}</section>
-      <section className="detail-section"><h3>Scenario truth <span className="simulated-label">SIMULATED LABEL</span></h3><div className="source-grid"><span>incident_label</span><b>{format(current.incident_label, 0)}</b><span>incident_type</span><b>{current.incident_type}</b><span>source context</span><b>{current.crime_domain_context} · derived</b></div></section>
+      <section className="detail-section"><h3>Scenario truth <span className="simulated-label">SIMULATED LABEL</span></h3><div className="source-grid"><span>incident_label</span><b>{format(current.incident_label, 0)}</b><span>incident_type</span><b>{current.incident_type}</b><span>record origin</span><b>{current.simulation_status === 'SIMULATED_USER_ADDED' ? 'User-entered local demo' : 'Supplied CSV scenario'}</b><span>source context</span><b>{current.crime_domain_context} · descriptive context only</b></div></section>
       <section className="detail-section"><h3>All source row fields</h3><div className="field-list">{fields.map(field => <div key={field}><span>{field}</span><b>{format(current[field])}</b></div>)}</div></section></div></aside></div>}
   </div>
 }
@@ -200,10 +217,36 @@ function Overview({ dashboard, timeline, onOpen }: { dashboard: AnyRow | null; t
 }
 function MetricTrend({ title, unit, data, field, color, onOpen }: { title: string; unit: string; data: AnyRow[]; field: string; color: string; onOpen: (id: string) => void }) { return <article className="panel chart-panel"><div className="panel-head"><div><h3>{title}</h3><span>SIMULATED measurement</span></div><span className="chart-unit">{unit}</span></div><ResponsiveContainer width="100%" height={180}><LineChart data={data} onClick={(event: any) => event?.activePayload?.[0]?.payload?.run_id && onOpen(event.activePayload[0].payload.run_id)}><CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#e7e9e2" /><XAxis dataKey="shortDate" minTickGap={38} tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} width={44} /><Tooltip formatter={(value: any) => [format(value), `Synthetic ${title.toLowerCase()}`]} /><Line type="monotone" dataKey={field} stroke={color} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} /></LineChart></ResponsiveContainer></article> }
 
-function Runs({ rows, total, search, setSearch, onOpen }: { rows: AnyRow[]; total: number; search: string; setSearch: (value: string) => void; onOpen: (id: string) => void }) {
+function Runs({ rows, total, search, setSearch, onOpen, onAdd }: { rows: AnyRow[]; total: number; search: string; setSearch: (value: string) => void; onOpen: (id: string) => void; onAdd: () => void }) {
   const [sort, setSort] = useState<'timestamp' | 'run_id' | 'validation_f1' | 'pipeline_latency_ms'>('timestamp')
   const ordered = [...rows].sort((a, b) => String(a[sort]).localeCompare(String(b[sort]), undefined, { numeric: true }) * (sort === 'timestamp' ? -1 : 1))
-  return <><div className="table-toolbar"><div className="search-field"><Search size={16} /><input aria-label="Search telemetry runs" placeholder="Search run, cause, model, domain…" value={search} onChange={event => setSearch(event.target.value)} /></div><span>{format(total, 0)} matching records <Badge>SIMULATED</Badge></span></div><div className="table-wrap"><table><thead><tr><th>RUN</th><th><SortButton title="Timestamp" sort="timestamp" setSort={setSort} /></th><th>SCENARIO</th><th>DETECTOR</th><th>F1 <button className="sort-inline" onClick={() => setSort('validation_f1')}>↕</button></th><th>DRIFT</th><th>LATENCY <button className="sort-inline" onClick={() => setSort('pipeline_latency_ms')}>↕</button></th><th>VERSION</th><th></th></tr></thead><tbody>{ordered.map(row => <tr key={row.run_id} tabIndex={0} onKeyDown={e => e.key === 'Enter' && onOpen(row.run_id)} onClick={() => onOpen(row.run_id)}><td><strong>{row.run_id}</strong><small>{row.crime_domain_context} · derived</small></td><td>{row.timestamp.slice(0, 10)}</td><td><Badge tone={row.incident_label ? 'fault' : 'normal'}>{row.incident_type}</Badge></td><td>{row.detected ? <Badge tone="warning">{row.alerts.length} rule(s)</Badge> : <span className="muted">Clear</span>}</td><td>{format(row.validation_f1)}</td><td>{format(row.feature_drift_score)}</td><td>{format(row.pipeline_latency_ms, 0)} ms</td><td>{row.model_version}</td><td><ChevronDown className="row-chevron" size={15} /></td></tr>)}</tbody></table>{!ordered.length && <Empty text="No runs match these filters. Try clearing the search or filters." />}</div><p className="table-foot">CSV labels are synthetic scenario truth, separate from rule-based detector output.</p></>
+  return <><div className="table-toolbar"><div className="search-field"><Search size={16} /><input aria-label="Search telemetry runs" placeholder="Search run, cause, model, domain…" value={search} onChange={event => setSearch(event.target.value)} /></div><div className="runs-toolbar-actions"><span>{format(total, 0)} matching records <Badge>SIMULATED</Badge></span><button className="button primary" onClick={onAdd}><Database size={15} /> Add run</button></div></div><div className="table-wrap"><table><thead><tr><th>RUN</th><th><SortButton title="Timestamp" sort="timestamp" setSort={setSort} /></th><th>SCENARIO</th><th>DETECTOR</th><th>F1 <button className="sort-inline" onClick={() => setSort('validation_f1')}>↕</button></th><th>DRIFT</th><th>LATENCY <button className="sort-inline" onClick={() => setSort('pipeline_latency_ms')}>↕</button></th><th>VERSION</th><th></th></tr></thead><tbody>{ordered.map(row => <tr key={row.run_id} tabIndex={0} onKeyDown={e => e.key === 'Enter' && onOpen(row.run_id)} onClick={() => onOpen(row.run_id)}><td><strong>{row.run_id}</strong><small>{row.run_id.startsWith('local_') ? 'Local addition · simulated' : `${row.crime_domain_context} · derived`}</small></td><td>{row.timestamp.slice(0, 10)}</td><td><Badge tone={row.incident_label ? 'fault' : 'normal'}>{row.incident_type}</Badge></td><td>{row.detected ? <Badge tone="warning">{row.alerts.length} rule(s)</Badge> : <span className="muted">Clear</span>}</td><td>{format(row.validation_f1)}</td><td>{format(row.feature_drift_score)}</td><td>{format(row.pipeline_latency_ms, 0)} ms</td><td>{row.model_version}</td><td><ChevronDown className="row-chevron" size={15} /></td></tr>)}</tbody></table>{!ordered.length && <Empty text="No runs match these filters. Try clearing the search or filters." />}</div><p className="table-foot">CSV scenario labels are synthetic; new entries are labeled SIMULATED_USER_ADDED and stored locally.</p></>
+}
+
+function AddRunDialog({ busy, onClose, onSubmit }: { busy: boolean; onClose: () => void; onSubmit: (form: AnyRow) => void }) {
+  const [form, setForm] = useState({
+    timestamp: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16),
+    crime_domain_context: 'Other Crime', crime_records_in_daily_domain_batch: '0',
+    model_name: 'ManualDemoModel', model_version: 'v1', data_quality_missing_rate: '0',
+    schema_valid: true, feature_drift_score: '0', validation_f1: '0.5',
+    pipeline_latency_ms: '500', training_success: true, incident_type: 'normal',
+  })
+  const [error, setError] = useState('')
+  const set = (key: string, value: string | boolean) => setForm(current => ({ ...current, [key]: value }))
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const missing = Number(form.data_quality_missing_rate)
+    const drift = Number(form.feature_drift_score)
+    const f1 = Number(form.validation_f1)
+    const latency = Number(form.pipeline_latency_ms)
+    const batch = Number(form.crime_records_in_daily_domain_batch)
+    if ([missing, drift, f1].some(value => !Number.isFinite(value) || value < 0 || value > 1) || latency < 0 || !Number.isFinite(latency) || batch < 0 || !Number.isInteger(batch)) {
+      setError('Check inputs: rates and scores must be 0–1, latency must be non-negative, and batch count must be a whole number.')
+      return
+    }
+    onSubmit({ ...form, timestamp: new Date(form.timestamp).toISOString(), crime_records_in_daily_domain_batch: batch, data_quality_missing_rate: missing, feature_drift_score: drift, validation_f1: f1, pipeline_latency_ms: latency })
+  }
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}><section className="add-run-modal" role="dialog" aria-modal="true" aria-labelledby="add-run-title"><div className="modal-heading"><div><Badge>SIMULATED LOCAL ENTRY</Badge><h2 id="add-run-title">Add telemetry run</h2><p>Saved to this workspace's SQLite database. The source CSV is never changed.</p></div><button className="icon-button" onClick={onClose} aria-label="Close add-run form"><X /></button></div><div className="modal-data-notice"><ShieldCheck size={16} /><span>Enter synthetic demonstration values only. Use aggregate counts and context labels; do not enter personal or sensitive information.</span></div><form onSubmit={submit}><div className="add-run-grid"><label>Run timestamp<input type="datetime-local" value={form.timestamp} onChange={e => set('timestamp', e.target.value)} /></label><label>Scenario type<select value={form.incident_type} onChange={e => set('incident_type', e.target.value)}>{['normal', 'data_drift', 'missing_data', 'schema_error', 'high_latency', 'training_failure'].map(value => <option key={value}>{value}</option>)}</select><small>Creates a synthetic scenario label for prototype evaluation.</small></label><label>Domain context (descriptive only)<input required maxLength={120} value={form.crime_domain_context} onChange={e => set('crime_domain_context', e.target.value)} /></label><label>Aggregate batch count<input type="number" min="0" step="1" value={form.crime_records_in_daily_domain_batch} onChange={e => set('crime_records_in_daily_domain_batch', e.target.value)} /></label><label>Model name<input required maxLength={120} value={form.model_name} onChange={e => set('model_name', e.target.value)} /></label><label>Model version<input required maxLength={40} value={form.model_version} onChange={e => set('model_version', e.target.value)} /></label><label>Missing-data rate<input type="number" min="0" max="1" step="0.001" value={form.data_quality_missing_rate} onChange={e => set('data_quality_missing_rate', e.target.value)} /></label><label>Feature drift score<input type="number" min="0" max="1" step="0.001" value={form.feature_drift_score} onChange={e => set('feature_drift_score', e.target.value)} /></label><label>Validation F1<input type="number" min="0" max="1" step="0.001" value={form.validation_f1} onChange={e => set('validation_f1', e.target.value)} /></label><label>Pipeline latency (ms)<input type="number" min="0" max="3600000" step="1" value={form.pipeline_latency_ms} onChange={e => set('pipeline_latency_ms', e.target.value)} /></label></div><div className="checkbox-row"><label><input type="checkbox" checked={form.schema_valid} onChange={e => set('schema_valid', e.target.checked)} /> Schema valid</label><label><input type="checkbox" checked={form.training_success} onChange={e => set('training_success', e.target.checked)} /> Training succeeded</label></div>{error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button type="submit" className="button primary" disabled={busy}><Database size={15} /> {busy ? 'Saving…' : 'Save simulated run'}</button></div></form></section></div>
 }
 function SortButton({ title, sort, setSort }: { title: string; sort: any; setSort: (sort: any) => void }) { return <button className="sort-button" onClick={() => setSort(sort)}>{title} ↕</button> }
 
