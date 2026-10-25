@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+*.sqlite3
+.env
+/.vscode/
+/Final Research paper.pdf
+/package-lock.json
+frontend/*.tsbuildinfo
